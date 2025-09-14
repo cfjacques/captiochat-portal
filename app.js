@@ -45,4 +45,79 @@ app.get("/auth/meta/debug", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
   const scopes = ["pages_show_list"].join(",");
   const url =
-    `ht
+    `https://www.facebook.com/v19.0/dialog/oauth` +
+    `?client_id=${META_APP_ID}` +
+    `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
+    `&scope=${scopes}` +
+    `&state=${encodeURIComponent(tenantId)}`;
+
+  res
+    .type("html")
+    .send(
+      `<h3>client_id:</h3><pre>${META_APP_ID}</pre>` +
+      `<h3>redirect_uri (env):</h3><pre>${META_REDIRECT_URI}</pre>` +
+      `<h3>URL completa:</h3><pre>${url}</pre>` +
+      `<p><a href="${url}">→ Abrir fluxo OAuth agora</a></p>`
+    );
+});
+
+// ---------- OAuth: callback (troca por long-lived) ----------
+app.get("/auth/meta/callback", async (req, res) => {
+  try {
+    const { code, state } = req.query;
+
+    // 1) token curto
+    const r1 = await fetch(
+      `https://graph.facebook.com/v19.0/oauth/access_token` +
+        `?client_id=${META_APP_ID}` +
+        `&client_secret=${META_APP_SECRET}` +
+        `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
+        `&code=${code}`
+    );
+    const shortTok = await r1.json();
+    if (!shortTok.access_token) {
+      return res
+        .status(400)
+        .type("html")
+        .send(`<h3>Erro ao obter token curto</h3><pre>${JSON.stringify(shortTok, null, 2)}</pre>`);
+    }
+
+    // 2) token longo (~60 dias)
+    const r2 = await fetch(
+      `https://graph.facebook.com/v19.0/oauth/access_token` +
+        `?grant_type=fb_exchange_token` +
+        `&client_id=${META_APP_ID}` +
+        `&client_secret=${META_APP_SECRET}` +
+        `&fb_exchange_token=${shortTok.access_token}`
+    );
+    const longTok = await r2.json();
+
+    res
+      .status(200)
+      .type("html")
+      .send(
+        `<h2>Login OK (tenant: ${state || "demo"})</h2>` +
+          `<h3>Short-lived token:</h3><pre>${JSON.stringify(shortTok, null, 2)}</pre>` +
+          `<h3>Long-lived user token:</h3><pre>${JSON.stringify(longTok, null, 2)}</pre>` +
+          `<p>Próximo: listar Páginas e IG.</p>`
+      );
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("Erro no callback");
+  }
+});
+
+// ---------- Webhook GET: verificação ----------
+app.get("/webhooks/meta", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === META_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
+});
+
+// ---------- start ----------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server on ${PORT}`));
