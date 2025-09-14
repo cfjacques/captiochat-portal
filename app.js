@@ -28,12 +28,7 @@ const {
 app.get("/auth/meta/start", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
   const scopes = [
-    "pages_show_list",
-    "pages_read_engagement",
-    "pages_manage_metadata",
-    "instagram_basic",
-    "instagram_manage_messages",
-    "instagram_manage_comments"
+    "pages_show_list"
   ].join(",");
 
   const url =
