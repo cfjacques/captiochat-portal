@@ -87,4 +87,9 @@ app.get("/webhooks/meta", (req, res) => {
 // (POST dos webhooks entra no próximo passo)
 
 const PORT = process.env.PORT || 3000;
+
+app.get("/debug/redirect", (_req, res) => {
+  res.type("text").send(process.env.META_REDIRECT_URI || "META_REDIRECT_URI not set");
+});
+
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
