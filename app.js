@@ -2,7 +2,6 @@
 import express from "express";
 import bodyParser from "body-parser";
 import crypto from "crypto";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(bodyParser.json());
@@ -122,7 +121,7 @@ app.get("/auth/meta/callback", async (req, res) => {
   }
 });
 
-// Tela de conexão (usa logo absoluta e Voltar para o site)
+// Tela de conexão
 app.get("/connect/meta", (req, res) => {
   const tenant = (req.query.tenant_id || "demo_show").toString();
   const oauthURL = `/auth/meta/start?tenant_id=${encodeURIComponent(tenant)}`;
