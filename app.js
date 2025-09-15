@@ -1,6 +1,4 @@
 // app.js (ESM)
-// Se seu package.json NÃO tiver "type":"module", troque os imports por require(...)!
-
 import express from "express";
 import bodyParser from "body-parser";
 import crypto from "crypto";
@@ -9,33 +7,31 @@ import fetch from "node-fetch";
 const app = express();
 app.use(bodyParser.json());
 
-// ---- CONSTS úteis
-const WWW = "https://www.captiochat.com";                 // seu site
-const LOGO = `${WWW}/assets/logo.png`;                    // logo absoluta
+// ---- Constantes de domínio
+const WWW = "https://www.captiochat.com";
+const LOGO = `${WWW}/assets/logo.png`;
 const PRIVACY_URL = `${WWW}/legal/privacy`;
 const TOS_URL = `${WWW}/legal/tos`;
 
-// ---- HEALTH
+// Health
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-// ---- Safety redirect: /comecar no portal -> site
+// /comecar no portal -> redireciona para o site
 app.get("/comecar", (_req, res) => res.redirect(302, `${WWW}/comecar.html`));
 
-// ---- DEMO simples
+// Raiz do portal
 app.get("/", (_req, res) => res.type("text").send("CaptioChat portal online 🚀"));
 
-// ===================== META OAUTH (MVP) =====================
-
-// Helper p/ montar querystring
+// Util
 const qs = (obj) =>
   Object.entries(obj)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join("&");
 
-// Iniciar OAuth (escopo mínimo)
+// Início OAuth
 app.get("/auth/meta/start", (req, res) => {
   const tenant = (req.query.tenant_id || "demo_show").toString();
-  const state = tenant; // só pra identificação mínima
+  const state = tenant;
 
   const params = {
     client_id: process.env.META_APP_ID,
@@ -49,11 +45,10 @@ app.get("/auth/meta/start", (req, res) => {
   res.redirect(url);
 });
 
-// Callback do OAuth
+// Callback OAuth
 app.get("/auth/meta/callback", async (req, res) => {
   const { code, state, error, error_description } = req.query;
 
-  // Usuário cancelou
   if (error) {
     return res
       .status(200)
@@ -68,12 +63,9 @@ app.get("/auth/meta/callback", async (req, res) => {
     `);
   }
 
-  if (!code) {
-    return res.status(400).send("Faltou o code");
-  }
+  if (!code) return res.status(400).send("Faltou o code");
 
   try {
-    // Troca code->token
     const tokenRes = await fetch(
       `https://graph.facebook.com/v${process.env.META_GRAPH_VERSION || "19.0"}/oauth/access_token?${qs({
         client_id: process.env.META_APP_ID,
@@ -85,7 +77,6 @@ app.get("/auth/meta/callback", async (req, res) => {
     const shortToken = await tokenRes.json();
     if (shortToken.error) throw shortToken.error;
 
-    // converte em long-lived user token
     const longRes = await fetch(
       `https://graph.facebook.com/v${process.env.META_GRAPH_VERSION || "19.0"}/oauth/access_token?${qs({
         grant_type: "fb_exchange_token",
@@ -97,12 +88,10 @@ app.get("/auth/meta/callback", async (req, res) => {
     const longToken = await longRes.json();
     if (longToken.error) throw longToken.error;
 
-    // lista páginas só para demonstrar (sem gravar nada)
     const pagesRes = await fetch(
       `https://graph.facebook.com/v${process.env.META_GRAPH_VERSION || "19.0"}/me/accounts?access_token=${longToken.access_token}`
     );
     const pages = await pagesRes.json();
-
     const first = Array.isArray(pages.data) && pages.data.length ? pages.data[0] : null;
 
     return res
@@ -133,7 +122,7 @@ app.get("/auth/meta/callback", async (req, res) => {
   }
 });
 
-// ---- Tela “Conectar com Facebook” (frontend simples servido pelo portal)
+// Tela de conexão (usa logo absoluta e Voltar para o site)
 app.get("/connect/meta", (req, res) => {
   const tenant = (req.query.tenant_id || "demo_show").toString();
   const oauthURL = `/auth/meta/start?tenant_id=${encodeURIComponent(tenant)}`;
@@ -183,6 +172,5 @@ app.get("/connect/meta", (req, res) => {
 </div>`);
 });
 
-// ---- SERVER
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server on ${PORT}`));
