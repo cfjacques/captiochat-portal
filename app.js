@@ -1,244 +1,295 @@
-// app.js
+// app.js — CaptioChat Portal (MVP OAuth Meta)
+// Executa com "node app.js" (package.json com "type":"module")
+
 import express from "express";
-import bodyParser from "body-parser";
-import crypto from "crypto";
-import { createClient } from "@supabase/supabase-js";
-
-const app = express();
-app.use(bodyParser.json());
-
-app.get("/health", (_req, res) => res.status(200).send("ok"));
-
-const PRIVACY_HTML = `<!doctype html><meta charset="utf-8"><title>CaptioChat – Privacy Policy</title><style>body{font-family:system-ui,Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 16px;line-height:1.6}</style><h1>Privacy Policy</h1><p>Last updated: 2025-09-14</p>`;
-const TOS_HTML = `<!doctype html><meta charset="utf-8"><title>CaptioChat – Terms of Service</title><style>body{font-family:system-ui,Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 16px;line-height:1.6}</style><h1>Terms of Service</h1><p>Last updated: 2025-09-14</p>`;
-app.get("/legal/privacy", (_req, res) => res.type("html").send(PRIVACY_HTML));
-app.get("/legal/tos", (_req, res) => res.type("html").send(TOS_HTML));
-
-const {
-  META_APP_ID,
-  META_APP_SECRET,
-  META_REDIRECT_URI,
-  META_VERIFY_TOKEN,
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE,
-  ENC_SECRET,
-  META_GRAPH_VERSION
-} = process.env;
-
-const FBV = META_GRAPH_VERSION || "v19.0";
-const graph  = (q) => `https://graph.facebook.com/${FBV}${q}`;
-const dialog = (q) => `https://www.facebook.com/${FBV}${q}`;
-const BASE_ORIGIN = (() => { try { return new URL(META_REDIRECT_URI).origin; } catch { return "https://app.captiochat.com"; } })();
-
-const ENC_KEY = Buffer.from(ENC_SECRET || "", "base64");
-function encrypt(text) {
-  if (!ENC_KEY || ENC_KEY.length !== 32) throw new Error("ENC_SECRET inválido (32 bytes base64)");
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", ENC_KEY, iv);
-  const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, enc]).toString("base64");
-}
-
-// base64url helpers para colocar origin dentro do state
-const b64url = (s) => Buffer.from(s, "utf8").toString("base64url");
-const fromB64url = (s) => Buffer.from(String(s || ""), "base64url").toString("utf8");
-
-const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, { auth: { persistSession: false } });
-
-// ======= UI simples (home + comecar) iguais aos anteriores omitidos por brevidade =======
-function channelsPage(tenant, flash = "") { /* (mesmo HTML que você já tem) */ return `
-<!doctype html><meta charset="utf-8"><title>CaptioChat – Começar</title>
-<style> :root{--bg:#0f172a;--fg:#e2e8f0;--muted:#94a3b8;--primary:#2563eb;--card:#0b1222;--border:rgba(255,255,255,.08)}
-*{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:var(--fg)}
-.nav{display:flex;align-items:center;justify-content:space-between;max-width:1100px;margin:16px auto;padding:0 16px}
-.brand{display:flex;gap:10px;align-items:center;font-weight:800}
-.link{color:#94a3b8;text-decoration:none;border:1px solid var(--border);padding:8px 12px;border-radius:10px}
-.wrap{max-width:1100px;margin:28px auto;padding:0 16px}
-h2{margin:4px 0 18px}
-.row{display:flex;gap:10px;align-items:center;margin-bottom:18px}
-input{background:#0b1222;border:1px solid var(--border);color:var(--fg);padding:10px 12px;border-radius:10px;width:240px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;display:flex;gap:12px;align-items:flex-start}
-.card h4{margin:4px 0 6px} .muted{color:var(--muted)} .pill{font-size:12px;border:1px solid var(--border);padding:4px 8px;border-radius:999px;color:#a3e635}
-.btn{margin-left:auto;background:var(--primary);color:#fff;border:0;border-radius:10px;padding:8px 12px;cursor:pointer}
-.sep{height:1px;background:var(--border);margin:18px 0} .flash{background:#0b3a1e;border:1px solid #14532d;color:#bbf7d0;padding:10px 12px;border-radius:10px;margin:12px 0}
-.icon{width:22px;height:22px} </style>
-<div class="nav"><div class="brand"><span style="width:28px;height:28px;border-radius:8px;background:#1479ff;display:inline-block;margin-right:6px"></span><span>CaptioChat</span></div></div>
-<div class="wrap">
-${flash ? `<div class="flash">${flash}</div>` : ``}
-<h2>Onde você quer começar?</h2>
-<div class="row"><label>tenant_id&nbsp;</label><input id="tenant" value="${tenant||'demo_show'}"/></div>
-<div class="grid">
-  <div class="card"><div class="icon"></div><div><h4>Facebook Messenger</h4><div class="muted">Habilite respostas e eventos da Página.</div><div class="sep"></div><span class="pill">Disponível</span></div><button class="btn" onclick="go('messenger')">Conectar</button></div>
-  <div class="card"><div class="icon"></div><div><h4>Instagram</h4><div class="muted">Conecte via Meta.</div><div class="sep"></div><span class="pill">Disponível</span></div><button class="btn" onclick="go('instagram')">Conectar</button></div>
-</div></div>
-<script>
-function go(channel){
-  const t = document.getElementById('tenant').value || 'demo_show';
-  const origin = window.location.href;
-  location.href = '/connect/meta?tenant_id='+encodeURIComponent(t)+'&channel='+encodeURIComponent(channel)+'&origin='+encodeURIComponent(origin);
-}
-</script>`;}
-app.get("/", (_req,res)=>res.redirect("/comecar"));
-app.get("/comecar", (req,res)=>res.type("html").send(channelsPage(req.query.tenant, req.query.msg)));
-
-// ======= PRECONSENTIMENTO (respeita origin) =======
-function preconsentPage(tenant, channel, origin, cancelled=false){
-  const t = tenant || "demo_show";
-  const backHref = origin ? origin : `/comecar?tenant=${encodeURIComponent(t)}`;
-  const startHref = `/auth/meta/start?tenant_id=${encodeURIComponent(t)}${origin?`&origin=${encodeURIComponent(origin)}`:''}`;
-  return `<!doctype html><meta charset="utf-8"><title>Conectar – CaptioChat</title>
-<style>:root{--bg:#0f172a;--fg:#e2e8f0;--muted:#94a3b8;--primary:#2563eb;--card:#0b1222;--border:rgba(255,255,255,.08)}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:var(--fg)}
-.nav{display:flex;align-items:center;justify-content:space-between;max-width:980px;margin:16px auto;padding:0 16px}
-.brand{display:flex;gap:10px;align-items:center;font-weight:800}.link{color:#94a3b8;text-decoration:none;border:1px solid var(--border);padding:8px 12px;border-radius:10px}
-.wrap{max-width:980px;margin:28px auto;padding:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:center}
-h1{margin:0 0 10px}p{color:var(--muted)}.btnPrimary{display:inline-flex;align-items:center;gap:10px;background:#1877F2;color:#fff;border:0;border-radius:10px;padding:12px 16px;font-weight:700;text-decoration:none}
-.note{font-size:12px;color:#94a3b8;margin-top:10px}.alert{background:#3f1d1d;border:1px solid #7f1d1d;color:#fecaca;padding:10px 12px;border-radius:10px;margin:12px 0}
-.box{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px}</style>
-<div class="nav"><div class="brand"><span style="width:28px;height:28px;border-radius:8px;background:#1479ff;display:inline-block;margin-right:6px"></span><span>CaptioChat</span></div>
-<a class="link" href="${backHref}">Voltar</a></div>
-<div class="wrap">
-  <div>
-    <h1>Conectar o Facebook Messenger</h1>
-    <p>Vamos pedir autorização básica para listar suas Páginas e concluir a conexão.</p>
-    ${cancelled?`<div class="alert">Conexão cancelada. Nenhuma permissão foi concedida.</div>`:''}
-    <a class="btnPrimary" href="${startHref}">Continuar com Facebook</a>
-    <div class="note">Ao continuar, você concorda com nossos <a href="/legal/tos" class="link">Termos</a> e <a href="/legal/privacy" class="link">Privacidade</a>.</div>
-  </div>
-  <div class="box"><strong>O que vamos solicitar</strong><ul>
-    <li>Ver sua conta e Páginas disponíveis (escopo mínimo).</li>
-    <li>Geramos um token seguro e guardamos criptografado.</li>
-    <li>Você pode revogar a qualquer momento no Facebook.</li>
-  </ul></div>
-</div>`;}
-app.get("/connect/meta", (req,res)=>{
-  const { tenant_id, channel, origin, denied } = req.query;
-  res.type("html").send(preconsentPage(tenant_id, channel||"messenger", origin, !!denied));
-});
-
-// ======= START (state leva tenant + origin) =======
-app.get("/auth/meta/start", (req, res) => {
-  const tenantId = req.query.tenant_id || "demo_show";
-  const origin = req.query.origin || "";
-  const scopes = ["pages_show_list"].join(",");
-  const stateObj = { t: tenantId, o: origin };
-  const state = b64url(JSON.stringify(stateObj));
-  const url = dialog(`/dialog/oauth`)
-    + `?client_id=${META_APP_ID}`
-    + `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}`
-    + `&scope=${scopes}`
-    + `&state=${state}`;
-  res.redirect(url);
-});
-
-// ======= CALLBACK (se cancelar, volta para origin) =======
-app.get("/auth/meta/callback", async (req,res)=>{
-  try{
-    const { code, state, error, error_reason, action } = req.query;
-    let tenantId = "demo_show", origin = "";
-    try{
-      const parsed = JSON.parse(fromB64url(state));
-      tenantId = parsed.t || tenantId;
-      origin   = parsed.o || "";
-    }catch{}
-
-    if (error || error_reason === "user_denied" || action === "cancel") {
-      const back = `/connect/meta?tenant_id=${encodeURIComponent(tenantId)}&denied=1`
-        + (origin ? `&origin=${encodeURIComponent(origin)}` : "");
-      return res.redirect(back);
-    }
-
-    if (!code){
-      const back = origin || `/comecar?tenant=${encodeURIComponent(tenantId)}`;
-      return res.status(400).type("html").send(
-        `<h2>Abra primeiro a tela de conexão</h2><p><a href="${back}">→ Voltar</a></p>`
-      );
-    }
-
-    const r1 = await fetch(
-      graph(`/oauth/access_token`)
-      + `?client_id=${META_APP_ID}`
-      + `&client_secret=${META_APP_SECRET}`
-      + `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}`
-      + `&code=${code}`
-    );
-    const shortTok = await r1.json();
-    if (!shortTok.access_token) return res.status(400).type("html").send(`<h3>Erro token curto</h3><pre>${JSON.stringify(shortTok,null,2)}</pre>`);
-
-    const r2 = await fetch(
-      graph(`/oauth/access_token`)
-      + `?grant_type=fb_exchange_token`
-      + `&client_id=${META_APP_ID}`
-      + `&client_secret=${META_APP_SECRET}`
-      + `&fb_exchange_token=${shortTok.access_token}`
-    );
-    const longTok = await r2.json();
-    if (!longTok.access_token) return res.status(400).type("html").send(`<h3>Erro token longo</h3><pre>${JSON.stringify(longTok,null,2)}</pre>`);
-    const userToken = longTok.access_token;
-    const userExpiresAt = new Date(Date.now() + (longTok.expires_in||0)*1000).toISOString();
-
-    const r3 = await fetch(graph(`/me/accounts`) + `?fields=id,name&access_token=${encodeURIComponent(userToken)}`);
-    const pages = await r3.json();
-    const firstPage = Array.isArray(pages?.data) && pages.data.length ? pages.data[0] : null;
-    const pageId = firstPage?.id || null;
-
-    const payload = { tenant_id: tenantId, provider:"meta",
-      user_long_lived_token: encrypt(userToken),
-      user_token_expires_at: userExpiresAt, page_id: pageId };
-    const { error: dbErr } = await supa.from("oauth_accounts").upsert(payload, { onConflict: "tenant_id" });
-    if (dbErr) return res.status(500).type("html").send(`<h3>Erro DB</h3><pre>${dbErr.message}</pre>`);
-
-    const back = origin || `/comecar?tenant=${encodeURIComponent(tenantId)}`;
-    res.type("html").send(
-      `<h2>Conta conectada com sucesso ✅</h2>
-       <p><b>Tenant:</b> ${tenantId}</p>
-       <ul><li><b>Page ID:</b> ${pageId || "—"}</li><li>Token salvo com segurança.</li></ul>
-       <p><a href="${back}">Voltar</a></p>`
-    );
-  }catch(e){ console.error(e); res.status(500).send("Erro no callback"); }
-});
-
-// webhook GET (verify)
-app.get("/webhooks/meta", (req,res)=>{
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-  if (mode==="subscribe" && token===META_VERIFY_TOKEN) return res.status(200).send(challenge);
-  res.sendStatus(403);
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=>console.log(`Server on ${PORT}`));
-
-// ===== COMEÇAR (assets, favicon e página) =====
 import path from "path";
 import { fileURLToPath } from "url";
+
+// ---------------------- Setup básico ----------------------
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// 1) garantir que a pasta public seja servida (se você já tem, manter as duas não faz mal)
-app.use(express.static(path.join(__dirname, "public")));
+// Variáveis de ambiente
+const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v19.0";
+const META_APP_ID   = process.env.META_APP_ID || "";
+const META_SECRET   = process.env.META_APP_SECRET || "";
+const REDIRECT_URI  = process.env.META_REDIRECT_URI || "https://app.captiochat.com/auth/meta/callback";
+const VERIFY_TOKEN  = process.env.META_VERIFY_TOKEN || "CAPTIOCHAT_VERIFY_123";
 
-// 2) mapear /assets -> public/assets com cache
+// Armazenamento em memória (apenas demo!)
+const mem = {
+  tokens: new Map(), // tenant -> { userLong, pageId, pageToken, channel, savedAt }
+  events: new Map(), // tenant -> [eventos]
+};
+
+// ---------------------- Estáticos / páginas ----------------------
+app.use(express.static(path.join(__dirname, "public")));
 app.use(
   "/assets",
-  express.static(path.join(__dirname, "public", "assets"), {
-    maxAge: "1y",
-    etag: false,
-  })
+  express.static(path.join(__dirname, "public", "assets"), { maxAge: "1y", etag: false })
+);
+app.get("/favicon.ico", (_req, res) =>
+  res.sendFile(path.join(__dirname, "public", "assets", "favicon.ico"))
 );
 
-// 3) muitos navegadores pedem /favicon.ico na raiz
-app.get("/favicon.ico", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "assets", "favicon.ico"));
+// Health
+app.get("/health", (_req, res) => res.status(200).send("ok"));
+
+// Home simples
+app.get("/", (_req, res) => res.send("CaptioChat portal online 🚀"));
+
+// Páginas legais (placeholder simples)
+app.get("/legal/privacy", (_req, res) => {
+  res.type("html").send(`<!doctype html><meta charset="utf-8">
+  <title>CaptioChat – Privacy Policy</title>
+  <style>body{font-family:system-ui,Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 16px;line-height:1.6}</style>
+  <h1>Privacy Policy</h1>
+  <p>We only process data needed to connect your Meta accounts and deliver automations.</p>
+  <p>Contact: legal@captiochat.com</p>`);
+});
+app.get("/legal/tos", (_req, res) => {
+  res.type("html").send(`<!doctype html><meta charset="utf-8">
+  <title>CaptioChat – Terms of Service</title>
+  <style>body{font-family:system-ui,Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 16px;line-height:1.6}</style>
+  <h1>Terms of Service</h1>
+  <p>By using CaptioChat you agree to Meta Platform Policies and these Terms.</p>`);
 });
 
-// 4) servir a página "começar" em /comecar
-app.get("/comecar", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "comecar-app.html"));
-});
-// ===== FIM COMEÇAR =====
+// Página "Começar" (UI está em public/comecar-app.html)
+app.get("/comecar", (_req, res) =>
+  res.sendFile(path.join(__dirname, "public", "comecar-app.html"))
+);
 
+// ---------------------- Tela de conexão (antes do OAuth) ----------------------
+// GET /connect/meta?tenant_id=demo_show&channel=messenger&origin=<url>&denied=1
+app.get("/connect/meta", (req, res) => {
+  const tenant  = req.query.tenant_id || "demo_show";
+  const denied  = req.query.denied === "1";
+  const origin  = req.query.origin || "/comecar";
+  const channel = req.query.channel || "messenger";
+
+  const msg = denied
+    ? `<div style="background:#7f1d1d;color:#fff;padding:12px 16px;border-radius:10px;margin:0 0 16px">
+         Conexão cancelada. Nenhuma permissão foi concedida.
+       </div>`
+    : "";
+
+  const startUrl = `/auth/meta/start?tenant_id=${encodeURIComponent(tenant)}`
+                 + `&channel=${encodeURIComponent(channel)}`
+                 + `&origin=${encodeURIComponent(origin)}`;
+
+  res.type("html").send(`<!doctype html><meta charset="utf-8">
+  <title>Conectar o Facebook Messenger</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    :root{--bg:#0f172a;--fg:#e2e8f0;--muted:#94a3b8;--card:#0b1222;--border:rgba(255,255,255,.08);--blue:#2563eb}
+    body{margin:0;background:var(--bg);color:var(--fg);font-family:Inter,system-ui,Arial,sans-serif}
+    .outer{max-width:960px;margin:32px auto;padding:0 16px}
+    .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+    a.link{color:#94a3b8;border:1px solid var(--border);padding:8px 12px;border-radius:10px;text-decoration:none}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px}
+    .btn{display:inline-flex;gap:8px;align-items:center;background:var(--blue);color:#fff;border:0;border-radius:10px;padding:12px 16px;text-decoration:none}
+    .muted{color:var(--muted)}
+    h1{margin:0 0 12px}
+    ul{margin:8px 0 0 20px}
+  </style>
+  <div class="outer">
+    <div class="top">
+      <div style="display:flex;gap:10px;align-items:center;font-weight:800">
+        <img src="/assets/logo.png" width="28" height="28" style="border-radius:8px">
+        CaptioChat
+      </div>
+      <a class="link" href="${origin}">Voltar</a>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        ${msg}
+        <h1>Conectar o Facebook Messenger</h1>
+        <p>Vamos pedir ao Facebook autorização mínima para listar suas Páginas e escolher qual conectar.</p>
+        <a class="btn" href="${startUrl}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M12 3c5 0 9 3.7 9 8.2S17 19.4 12 19.4a8.7 8.7 0 0 1-3.1-.6L5 21l.9-3.5A8.3 8.3 0 0 1 3 11.2C3 6.7 7 3 12 3Z" stroke="white" stroke-width="2"/>
+            <path d="m8 13 3-3 2 2 3-3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Continuar com Facebook
+        </a>
+        <p class="muted" style="margin-top:10px">Ao continuar, você concorda com nossos <a href="/legal/tos" style="color:#93c5fd">Termos</a> e <a href="/legal/privacy" style="color:#93c5fd">Privacidade</a>.</p>
+      </div>
+      <div class="card">
+        <h3>O que vamos solicitar:</h3>
+        <ul class="muted">
+          <li>Permissão para listar suas Páginas (escopo <code>pages_show_list</code>).</li>
+          <li>Geramos um token seguro (demo: memória) e mostramos o Page ID conectado.</li>
+          <li>Você pode revogar quando quiser nas configurações do Facebook.</li>
+        </ul>
+      </div>
+    </div>
+  </div>`);
+});
+
+// ---------------------- OAuth: iniciar ----------------------
+app.get("/auth/meta/start", (req, res) => {
+  const tenant  = req.query.tenant_id || "demo_show";
+  const origin  = req.query.origin || "/comecar";
+  const channel = req.query.channel || "messenger";
+
+  const scopes  = ["pages_show_list"].join(",");
+  const stateObj = { tenant, origin, channel, t: Date.now() };
+  const state    = Buffer.from(JSON.stringify(stateObj)).toString("base64url");
+
+  const url = `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth`
+            + `?client_id=${encodeURIComponent(META_APP_ID)}`
+            + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
+            + `&scope=${encodeURIComponent(scopes)}`
+            + `&state=${encodeURIComponent(state)}`
+            + `&response_type=code`;
+
+  res.redirect(url);
+});
+
+// ---------------------- OAuth: callback ----------------------
+app.get("/auth/meta/callback", async (req, res) => {
+  const { code, state, error } = req.query;
+  let stateObj = { tenant: "demo_show", origin: "/comecar", channel: "messenger" };
+  try { if (state) stateObj = JSON.parse(Buffer.from(state, "base64url").toString("utf8")); } catch {}
+
+  // Usuário cancelou
+  if (error) {
+    const back = `/connect/meta?tenant_id=${encodeURIComponent(stateObj.tenant)}`
+               + `&channel=${encodeURIComponent(stateObj.channel)}`
+               + `&origin=${encodeURIComponent(stateObj.origin)}`
+               + `&denied=1`;
+    return res.redirect(back);
+  }
+
+  if (!code) return res.status(400).send("Missing code");
+
+  try {
+    // 1) short-lived user token
+    const url1 = `https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`
+               + `?client_id=${encodeURIComponent(META_APP_ID)}`
+               + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
+               + `&client_secret=${encodeURIComponent(META_SECRET)}`
+               + `&code=${encodeURIComponent(code)}`;
+
+    const r1 = await fetch(url1);
+    const shortTok = await r1.json();
+
+    if (!r1.ok || !shortTok.access_token) {
+      return res.type("json").status(400).send({
+        error: "Erro ao obter token curto",
+        details: shortTok,
+      });
+    }
+
+    // 2) long-lived user token
+    const url2 = `https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`
+               + `?grant_type=fb_exchange_token`
+               + `&client_id=${encodeURIComponent(META_APP_ID)}`
+               + `&client_secret=${encodeURIComponent(META_SECRET)}`
+               + `&fb_exchange_token=${encodeURIComponent(shortTok.access_token)}`;
+
+    const r2 = await fetch(url2);
+    const longTok = await r2.json();
+
+    if (!r2.ok || !longTok.access_token) {
+      return res.type("json").status(400).send({
+        error: "Erro ao trocar por token longo",
+        details: longTok,
+      });
+    }
+
+    // 3) listar páginas
+    const r3 = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/me/accounts?access_token=${encodeURIComponent(longTok.access_token)}`);
+    const pages = await r3.json();
+    if (!r3.ok) {
+      return res.type("json").status(400).send({ error: "Erro ao listar páginas", details: pages });
+    }
+
+    const first = Array.isArray(pages.data) && pages.data.length ? pages.data[0] : null;
+
+    // 4) armazenar em memória (demo)
+    mem.tokens.set(stateObj.tenant, {
+      userLong: longTok.access_token,
+      pageId: first?.id || null,
+      pageToken: first?.access_token || null,
+      channel: stateObj.channel || "messenger",
+      savedAt: new Date().toISOString(),
+    });
+
+    // 5) resposta amigável
+    res.type("html").send(`<!doctype html><meta charset="utf-8">
+    <title>Conta conectada</title>
+    <style>body{font-family:system-ui,Arial,sans-serif;max-width:780px;margin:40px auto;padding:0 16px;line-height:1.5}</style>
+    <h2>Conta conectada com sucesso ✅</h2>
+    <p><b>Tenant:</b> ${stateObj.tenant}</p>
+    <p><b>Page ID:</b> ${first?.id || "—"}</p>
+    <p><b>IG User ID:</b> — (vincule um IG Business/Creator à Página)</p>
+    <p><b>Page access token:</b> ${first?.access_token ? "salvo em memória (demo)" : "—"}</p>
+    <p><b>Versão da API:</b> ${GRAPH_VERSION}</p>
+    <p><a href="${stateObj.origin}">Voltar</a></p>`);
+  } catch (e) {
+    res.status(500).type("json").send({ error: "callback-failed", message: String(e) });
+  }
+});
+
+// ---------------------- Webhooks Meta ----------------------
+// Verificação
+app.get("/webhooks/meta", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  res.sendStatus(403);
+});
+
+// Recepção (apenas log + guarda em memória por tenant associado ao pageId)
+app.post("/webhooks/meta", async (req, res) => {
+  try {
+    const body = req.body || {};
+    // tentar identificar tenant pelo pageId que vier no evento
+    // (simplificado para demo: procura no mem.tokens por pageId igual)
+    const pageId =
+      body?.entry?.[0]?.id ||
+      body?.entry?.[0]?.changes?.[0]?.value?.from?.id ||
+      null;
+
+    let tenantForEvent = null;
+    for (const [tenant, t] of mem.tokens.entries()) {
+      if (t.pageId && t.pageId === pageId) {
+        tenantForEvent = tenant; break;
+      }
+    }
+    if (!tenantForEvent) tenantForEvent = "unknown";
+
+    if (!mem.events.has(tenantForEvent)) mem.events.set(tenantForEvent, []);
+    mem.events.get(tenantForEvent).push({ receivedAt: new Date().toISOString(), body });
+
+    res.sendStatus(200);
+  } catch {
+    res.sendStatus(200);
+  }
+});
+
+// ---------------------- Utilitários de debug ----------------------
+app.get("/meta/events", (req, res) => {
+  const tenant = req.query.tenant_id || "demo_show";
+  res.type("json").send(mem.events.get(tenant) || []);
+});
+
+app.get("/debug/redirect", (_req, res) => res.send(REDIRECT_URI));
+
+// ---------------------- Start ----------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Portal up on :${PORT} | Graph ${GRAPH_VERSION}`);
+});
