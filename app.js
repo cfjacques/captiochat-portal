@@ -28,7 +28,12 @@ const {
 // ---------- OAuth: iniciar (escopo mínimo por enquanto) ----------
 app.get("/auth/meta/start", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
-  const scopes = ["pages_show_list"].join(","); // adicionar outros depois
+  const scopes = [
+  "pages_show_list",
+  "pages_read_engagement",
+  "pages_manage_metadata"
+].join(",");
+
 
   const url =
     `https://www.facebook.com/v19.0/dialog/oauth` +
