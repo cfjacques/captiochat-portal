@@ -211,3 +211,34 @@ app.get("/webhooks/meta", (req,res)=>{
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=>console.log(`Server on ${PORT}`));
+
+// ===== COMEÇAR (assets, favicon e página) =====
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
+// 1) garantir que a pasta public seja servida (se você já tem, manter as duas não faz mal)
+app.use(express.static(path.join(__dirname, "public")));
+
+// 2) mapear /assets -> public/assets com cache
+app.use(
+  "/assets",
+  express.static(path.join(__dirname, "public", "assets"), {
+    maxAge: "1y",
+    etag: false,
+  })
+);
+
+// 3) muitos navegadores pedem /favicon.ico na raiz
+app.get("/favicon.ico", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "assets", "favicon.ico"));
+});
+
+// 4) servir a página "começar" em /comecar
+app.get("/comecar", (_req, res) => {
+  res.sendFile(path.join(__dirname, "public", "comecar-app.html"));
+});
+// ===== FIM COMEÇAR =====
+
