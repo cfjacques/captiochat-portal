@@ -12,7 +12,7 @@ const META_REDIRECT_URI =
   process.env.META_REDIRECT_URI || "https://app.captiochat.com/auth/meta/callback";
 const META_VERSION = process.env.META_GRAPH_VERSION || "v19.0";
 
-// Para o botão VOLTAR (para o seu site público).
+// Origem do site público (para o botão Voltar nas telas internas)
 const SITE_ORIGIN = process.env.SITE_ORIGIN || "https://www.captiochat.com";
 
 // ------------ Express básico ------------
@@ -22,8 +22,17 @@ app.use(express.json());
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Servir a pasta "public" (index.html, comecar.html, assets/*)
-app.use(express.static(path.join(__dirname, "public"), { extensions: ["html"] }));
+// Serve APENAS /assets direto (evita ambiguidade com rotas)
+app.use("/assets", express.static(path.join(__dirname, "public", "assets")));
+
+// Rotas explícitas para as páginas estáticas
+app.get("/", (_req, res) =>
+  res.sendFile(path.join(__dirname, "public", "index.html"))
+);
+
+app.get(["/comecar", "/comecar.html"], (_req, res) =>
+  res.sendFile(path.join(__dirname, "public", "comecar.html"))
+);
 
 // Healthcheck
 app.get("/health", (_req, res) => res.status(200).send("ok"));
@@ -98,8 +107,8 @@ ul{margin:8px 0 0 20px;color:var(--muted)}
 app.get("/auth/meta/start", (req, res) => {
   try {
     const tenantId = (req.query.tenant_id || "demo_show").toString();
-    const dry = req.query.dry === "1";        // se ?dry=1 → só exibe o URL
-    const useMobile = req.query.use_m === "1";// se ?use_m=1 → m.facebook.com
+    const dry = req.query.dry === "1";        // ?dry=1 → mostra a URL
+    const useMobile = req.query.use_m === "1";// ?use_m=1 → m.facebook.com
 
     const scopes = "pages_show_list";
     const fbDomain = useMobile ? "https://m.facebook.com" : "https://www.facebook.com";
@@ -112,14 +121,9 @@ app.get("/auth/meta/start", (req, res) => {
       `&state=${encodeURIComponent(tenantId)}` +
       `&scope=${encodeURIComponent(scopes)}`;
 
-    if (dry) {
-      // Modo debug: mostra o URL que iremos usar
-      res.type("text/plain").send(authUrl);
-      return;
-    }
+    if (dry) return res.type("text/plain").send(authUrl);
 
-    // Modo normal: redireciona
-    res.redirect(authUrl);
+    return res.redirect(authUrl);
   } catch (e) {
     console.error("Erro em /auth/meta/start:", e);
     res.status(500).send("Erro ao iniciar login com Facebook.");
@@ -129,7 +133,7 @@ app.get("/auth/meta/start", (req, res) => {
 // ------------- OAuth CALLBACK -------------
 app.get("/auth/meta/callback", async (req, res) => {
   try {
-    // Se usuário cancelou no Facebook:
+    // Cancelado no Facebook
     if (req.query.error) {
       const state = (req.query.state || "").toString();
       return res.redirect(`/connect/meta?denied=1${state ? `&tenant_id=${encodeURIComponent(state)}` : ""}`);
@@ -137,10 +141,9 @@ app.get("/auth/meta/callback", async (req, res) => {
 
     const code = (req.query.code || "").toString();
     const tenantId = (req.query.state || "demo_show").toString();
-
     if (!code) return res.status(400).send("Faltou 'code'.");
 
-    // Troca o code por access_token (short-lived)
+    // Troca code -> short-lived token
     const tokenResp = await fetch(
       `https://graph.facebook.com/${META_VERSION}/oauth/access_token` +
         `?client_id=${encodeURIComponent(META_APP_ID)}` +
@@ -149,19 +152,18 @@ app.get("/auth/meta/callback", async (req, res) => {
         `&code=${encodeURIComponent(code)}`
     );
     const tokenJson = await tokenResp.json();
-
     if (!tokenResp.ok || !tokenJson.access_token) {
       return res.status(400).type("json").send(tokenJson);
     }
     const userAccessToken = tokenJson.access_token;
 
-    // Lista páginas (só para demo visual)
+    // Lista páginas (demo)
     const pagesResp = await fetch(
       `https://graph.facebook.com/${META_VERSION}/me/accounts?access_token=${encodeURIComponent(userAccessToken)}`
     );
     const pages = await pagesResp.json();
 
-    // (Opcional) Trocar por long-lived:
+    // Long-lived user token (opcional)
     const llResp = await fetch(
       `https://graph.facebook.com/${META_VERSION}/oauth/access_token` +
         `?grant_type=fb_exchange_token` +
@@ -171,7 +173,6 @@ app.get("/auth/meta/callback", async (req, res) => {
     );
     const llJson = await llResp.json();
 
-    // Telinha de sucesso simples
     const html = `<!doctype html>
 <meta charset="utf-8"/>
 <title>Conta conectada</title>
