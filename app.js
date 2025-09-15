@@ -1,6 +1,8 @@
 // app.js
 import express from "express";
 import bodyParser from "body-parser";
+import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 app.use(bodyParser.json());
@@ -17,23 +19,37 @@ const TOS_HTML = `<!doctype html><meta charset="utf-8"><title>CaptioChat – Ter
 app.get("/legal/privacy", (_req, res) => res.type("html").send(PRIVACY_HTML));
 app.get("/legal/tos", (_req, res) => res.type("html").send(TOS_HTML));
 
-// ---------- config Meta ----------
+// ---------- env ----------
 const {
   META_APP_ID,
   META_APP_SECRET,
   META_REDIRECT_URI,
-  META_VERIFY_TOKEN
+  META_VERIFY_TOKEN,
+  SUPABASE_URL,
+  SUPABASE_SERVICE_ROLE,
+  ENC_SECRET
 } = process.env;
+
+// ---------- crypto helpers (AES-256-GCM) ----------
+const ENC_KEY = Buffer.from(ENC_SECRET || "", "base64"); // 32 bytes
+function encrypt(text) {
+  if (!ENC_KEY || ENC_KEY.length !== 32) throw new Error("ENC_SECRET inválido");
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", ENC_KEY, iv);
+  const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, enc]).toString("base64");
+}
+
+// ---------- supabase ----------
+const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+  auth: { persistSession: false }
+});
 
 // ---------- OAuth: iniciar (escopo mínimo por enquanto) ----------
 app.get("/auth/meta/start", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
-  const scopes = [
-  "pages_show_list",
-  "pages_read_engagement",
-  "pages_manage_metadata"
-].join(",");
-
+  const scopes = ["pages_show_list"].join(","); // manter mínimo para evitar "Invalid Scopes"
 
   const url =
     `https://www.facebook.com/v19.0/dialog/oauth` +
@@ -45,7 +61,7 @@ app.get("/auth/meta/start", (req, res) => {
   res.redirect(url);
 });
 
-// ---------- DEBUG: ver URL que será usada ----------
+// ---------- DEBUG: ver URL/redirect atual ----------
 app.get("/auth/meta/debug", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
   const scopes = ["pages_show_list"].join(",");
@@ -60,16 +76,17 @@ app.get("/auth/meta/debug", (req, res) => {
     .type("html")
     .send(
       `<h3>client_id:</h3><pre>${META_APP_ID}</pre>` +
-      `<h3>redirect_uri (env):</h3><pre>${META_REDIRECT_URI}</pre>` +
+      `<h3>redirect_uri:</h3><pre>${META_REDIRECT_URI}</pre>` +
       `<h3>URL completa:</h3><pre>${url}</pre>` +
       `<p><a href="${url}">→ Abrir fluxo OAuth agora</a></p>`
     );
 });
 
-// ---------- OAuth: callback (troca por long-lived) ----------
+// ---------- OAuth: callback (short → long + salvar no Supabase) ----------
 app.get("/auth/meta/callback", async (req, res) => {
   try {
-    const { code, state } = req.query;
+    const { code, state } = req.query;           // state = tenant_id
+    const tenantId = String(state || "demo");
 
     // 1) token curto
     const r1 = await fetch(
@@ -96,15 +113,60 @@ app.get("/auth/meta/callback", async (req, res) => {
         `&fb_exchange_token=${shortTok.access_token}`
     );
     const longTok = await r2.json();
+    if (!longTok.access_token) {
+      return res
+        .status(400)
+        .type("html")
+        .send(`<h3>Erro ao estender token</h3><pre>${JSON.stringify(longTok, null, 2)}</pre>`);
+    }
+    const userToken = longTok.access_token;
+    const userExpiresAt = new Date(Date.now() + (longTok.expires_in || 0) * 1000).toISOString();
 
-    res
+    // 3) listar páginas (apenas id,name para não exigir outros escopos)
+    const r3 = await fetch(
+      `https://graph.facebook.com/v19.0/me/accounts?fields=id,name&access_token=${encodeURIComponent(userToken)}`
+    );
+    const pages = await r3.json();
+    if (pages.error) {
+      // não falhar o fluxo — só reportar
+      console.error("Erro ao listar páginas:", pages.error);
+    }
+
+    const firstPage = Array.isArray(pages?.data) && pages.data.length > 0 ? pages.data[0] : null;
+    const pageId = firstPage?.id || null;
+
+    // 4) salvar/atualizar no Supabase (tokens cifrados)
+    const payload = {
+      tenant_id: tenantId,
+      provider: "meta",
+      user_long_lived_token: encrypt(userToken),
+      user_token_expires_at: userExpiresAt,
+      page_id: pageId,
+      page_access_token: null, // vamos pegar depois quando liberarmos escopos
+      ig_user_id: null         // idem
+    };
+
+    const { error } = await supa
+      .from("oauth_accounts")
+      .upsert(payload, { onConflict: "tenant_id" });
+
+    if (error) {
+      console.error(error);
+      return res.status(500).type("html").send(`<h3>Erro ao salvar no banco</h3><pre>${error.message}</pre>`);
+    }
+
+    // 5) resposta amigável
+    return res
       .status(200)
       .type("html")
       .send(
-        `<h2>Login OK (tenant: ${state || "demo"})</h2>` +
-          `<h3>Short-lived token:</h3><pre>${JSON.stringify(shortTok, null, 2)}</pre>` +
-          `<h3>Long-lived user token:</h3><pre>${JSON.stringify(longTok, null, 2)}</pre>` +
-          `<p>Próximo: listar Páginas e IG.</p>`
+        `<h2>Conta conectada com sucesso ✅</h2>
+         <p><b>Tenant:</b> ${tenantId}</p>
+         <ul>
+           <li><b>Page ID (primeira encontrada):</b> ${pageId || "— (nenhuma página listada)"} </li>
+           <li><b>Token salvo com segurança.</b></li>
+         </ul>
+         <p>Próximo passo: conceder escopos extras para obter <i>Page Access Token</i> e o <i>Instagram Business ID</i> vinculados.</p>`
       );
   } catch (e) {
     console.error(e);
@@ -112,7 +174,7 @@ app.get("/auth/meta/callback", async (req, res) => {
   }
 });
 
-// ---------- Webhook GET: verificação ----------
+// ---------- Webhook GET: verificação (usaremos depois) ----------
 app.get("/webhooks/meta", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
