@@ -27,8 +27,14 @@ const {
   META_VERIFY_TOKEN,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE,
-  ENC_SECRET
+  ENC_SECRET,
+  META_GRAPH_VERSION // ex.: "v19.0", "v20.0"
 } = process.env;
+
+// ---------- version helpers ----------
+const FBV = META_GRAPH_VERSION || "v19.0";
+const graph = (pathAndQuery) => `https://graph.facebook.com/${FBV}${pathAndQuery}`;
+const dialog = (pathAndQuery) => `https://www.facebook.com/${FBV}${pathAndQuery}`;
 
 // ---------- crypto helpers (AES-256-GCM) ----------
 const ENC_KEY = Buffer.from(ENC_SECRET || "", "base64"); // 32 bytes
@@ -52,7 +58,7 @@ app.get("/auth/meta/start", (req, res) => {
   const scopes = ["pages_show_list"].join(","); // manter mínimo para evitar "Invalid Scopes"
 
   const url =
-    `https://www.facebook.com/v19.0/dialog/oauth` +
+    dialog(`/dialog/oauth`) +
     `?client_id=${META_APP_ID}` +
     `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
     `&scope=${scopes}` +
@@ -66,7 +72,7 @@ app.get("/auth/meta/debug", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
   const scopes = ["pages_show_list"].join(",");
   const url =
-    `https://www.facebook.com/v19.0/dialog/oauth` +
+    dialog(`/dialog/oauth`) +
     `?client_id=${META_APP_ID}` +
     `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
     `&scope=${scopes}` +
@@ -77,6 +83,7 @@ app.get("/auth/meta/debug", (req, res) => {
     .send(
       `<h3>client_id:</h3><pre>${META_APP_ID}</pre>` +
       `<h3>redirect_uri:</h3><pre>${META_REDIRECT_URI}</pre>` +
+      `<h3>API version:</h3><pre>${FBV}</pre>` +
       `<h3>URL completa:</h3><pre>${url}</pre>` +
       `<p><a href="${url}">→ Abrir fluxo OAuth agora</a></p>`
     );
@@ -85,12 +92,12 @@ app.get("/auth/meta/debug", (req, res) => {
 // ---------- OAuth: callback (short → long + salvar no Supabase) ----------
 app.get("/auth/meta/callback", async (req, res) => {
   try {
-    const { code, state } = req.query;           // state = tenant_id
+    const { code, state } = req.query; // state = tenant_id
     const tenantId = String(state || "demo");
 
     // 1) token curto
     const r1 = await fetch(
-      `https://graph.facebook.com/v19.0/oauth/access_token` +
+      graph(`/oauth/access_token`) +
         `?client_id=${META_APP_ID}` +
         `&client_secret=${META_APP_SECRET}` +
         `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
@@ -106,7 +113,7 @@ app.get("/auth/meta/callback", async (req, res) => {
 
     // 2) token longo (~60 dias)
     const r2 = await fetch(
-      `https://graph.facebook.com/v19.0/oauth/access_token` +
+      graph(`/oauth/access_token`) +
         `?grant_type=fb_exchange_token` +
         `&client_id=${META_APP_ID}` +
         `&client_secret=${META_APP_SECRET}` +
@@ -124,11 +131,12 @@ app.get("/auth/meta/callback", async (req, res) => {
 
     // 3) listar páginas (apenas id,name para não exigir outros escopos)
     const r3 = await fetch(
-      `https://graph.facebook.com/v19.0/me/accounts?fields=id,name&access_token=${encodeURIComponent(userToken)}`
+      graph(`/me/accounts`) +
+        `?fields=id,name` +
+        `&access_token=${encodeURIComponent(userToken)}`
     );
     const pages = await r3.json();
     if (pages.error) {
-      // não falhar o fluxo — só reportar
       console.error("Erro ao listar páginas:", pages.error);
     }
 
@@ -142,8 +150,8 @@ app.get("/auth/meta/callback", async (req, res) => {
       user_long_lived_token: encrypt(userToken),
       user_token_expires_at: userExpiresAt,
       page_id: pageId,
-      page_access_token: null, // vamos pegar depois quando liberarmos escopos
-      ig_user_id: null         // idem
+      page_access_token: null, // pegaremos depois com escopos extras
+      ig_user_id: null
     };
 
     const { error } = await supa
@@ -155,7 +163,6 @@ app.get("/auth/meta/callback", async (req, res) => {
       return res.status(500).type("html").send(`<h3>Erro ao salvar no banco</h3><pre>${error.message}</pre>`);
     }
 
-    // 5) resposta amigável
     return res
       .status(200)
       .type("html")
@@ -163,10 +170,10 @@ app.get("/auth/meta/callback", async (req, res) => {
         `<h2>Conta conectada com sucesso ✅</h2>
          <p><b>Tenant:</b> ${tenantId}</p>
          <ul>
-           <li><b>Page ID (primeira encontrada):</b> ${pageId || "— (nenhuma página listada)"} </li>
+           <li><b>Page ID (primeira encontrada):</b> ${pageId || "— (nenhuma página listada)"}</li>
            <li><b>Token salvo com segurança.</b></li>
          </ul>
-         <p>Próximo passo: conceder escopos extras para obter <i>Page Access Token</i> e o <i>Instagram Business ID</i> vinculados.</p>`
+         <p>Versão da API em uso: <code>${FBV}</code>. Para atualizar, basta mudar a env <code>META_GRAPH_VERSION</code> e reiniciar.</p>`
       );
   } catch (e) {
     console.error(e);
