@@ -52,10 +52,14 @@ const supa = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
   auth: { persistSession: false }
 });
 
-// ---------- OAuth: iniciar (escopo mínimo por enquanto) ----------
+// ---------- OAuth: iniciar (pede 3 escopos de página) ----------
 app.get("/auth/meta/start", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
-  const scopes = ["pages_show_list"].join(","); // manter mínimo para evitar "Invalid Scopes"
+  const scopes = [
+    "pages_show_list",
+    "pages_read_engagement",
+    "pages_manage_metadata"
+  ].join(",");
 
   const url =
     dialog(`/dialog/oauth`) +
@@ -70,7 +74,11 @@ app.get("/auth/meta/start", (req, res) => {
 // ---------- DEBUG: ver URL/redirect atual ----------
 app.get("/auth/meta/debug", (req, res) => {
   const tenantId = req.query.tenant_id || "demo";
-  const scopes = ["pages_show_list"].join(",");
+  const scopes = [
+    "pages_show_list",
+    "pages_read_engagement",
+    "pages_manage_metadata"
+  ].join(",");
   const url =
     dialog(`/dialog/oauth`) +
     `?client_id=${META_APP_ID}` +
@@ -89,7 +97,7 @@ app.get("/auth/meta/debug", (req, res) => {
     );
 });
 
-// ---------- OAuth: callback (short → long + salvar no Supabase) ----------
+// ---------- OAuth: callback (short → long + salvar + pegar Page/IG) ----------
 app.get("/auth/meta/callback", async (req, res) => {
   try {
     const { code, state } = req.query; // state = tenant_id
@@ -129,19 +137,31 @@ app.get("/auth/meta/callback", async (req, res) => {
     const userToken = longTok.access_token;
     const userExpiresAt = new Date(Date.now() + (longTok.expires_in || 0) * 1000).toISOString();
 
-    // 3) listar páginas (apenas id,name para não exigir outros escopos)
+    // 3) listar páginas + tentar pegar access_token da página e IG vinculado
     const r3 = await fetch(
       graph(`/me/accounts`) +
-        `?fields=id,name` +
+        `?fields=id,name,access_token,instagram_business_account{id,username}` +
         `&access_token=${encodeURIComponent(userToken)}`
     );
     const pages = await r3.json();
-    if (pages.error) {
-      console.error("Erro ao listar páginas:", pages.error);
-    }
 
-    const firstPage = Array.isArray(pages?.data) && pages.data.length > 0 ? pages.data[0] : null;
-    const pageId = firstPage?.id || null;
+    let pageId = null;
+    let pageToken = null;
+    let igUserId = null;
+    let igUsername = null;
+
+    if (Array.isArray(pages?.data) && pages.data.length > 0) {
+      // prioriza página com IG vinculado
+      const withIG = pages.data.find(p => p.instagram_business_account?.id);
+      const chosen = withIG || pages.data[0];
+
+      pageId = chosen.id || null;
+      pageToken = chosen.access_token || null; // requer pages_read_engagement / pages_manage_metadata
+      if (chosen.instagram_business_account) {
+        igUserId = chosen.instagram_business_account.id || null;
+        igUsername = chosen.instagram_business_account.username || null;
+      }
+    }
 
     // 4) salvar/atualizar no Supabase (tokens cifrados)
     const payload = {
@@ -150,8 +170,8 @@ app.get("/auth/meta/callback", async (req, res) => {
       user_long_lived_token: encrypt(userToken),
       user_token_expires_at: userExpiresAt,
       page_id: pageId,
-      page_access_token: null, // pegaremos depois com escopos extras
-      ig_user_id: null
+      page_access_token: pageToken ? encrypt(pageToken) : null,
+      ig_user_id: igUserId
     };
 
     const { error } = await supa
@@ -163,6 +183,7 @@ app.get("/auth/meta/callback", async (req, res) => {
       return res.status(500).type("html").send(`<h3>Erro ao salvar no banco</h3><pre>${error.message}</pre>`);
     }
 
+    // 5) resposta amigável
     return res
       .status(200)
       .type("html")
@@ -170,10 +191,13 @@ app.get("/auth/meta/callback", async (req, res) => {
         `<h2>Conta conectada com sucesso ✅</h2>
          <p><b>Tenant:</b> ${tenantId}</p>
          <ul>
-           <li><b>Page ID (primeira encontrada):</b> ${pageId || "— (nenhuma página listada)"}</li>
-           <li><b>Token salvo com segurança.</b></li>
+           <li><b>Page ID:</b> ${pageId || "— (nenhuma página listada)"}</li>
+           <li><b>IG User ID:</b> ${igUserId || "— (vincule um IG Business/Creator à Página)"}</li>
+           <li><b>IG Username:</b> ${igUsername || "—"}</li>
+           <li><b>Page access token:</b> ${pageToken ? "salvo com segurança" : "— (falta permissão; refaça login e aceite)"}</li>
          </ul>
-         <p>Versão da API em uso: <code>${FBV}</code>. Para atualizar, basta mudar a env <code>META_GRAPH_VERSION</code> e reiniciar.</p>`
+         <p>Se “Page access token” aparecer como “falta permissão”, você verá a tela de consentimento novamente — aceite as permissões e repita o login.</p>
+         <p>Versão da API em uso: <code>${FBV}</code>.</p>`
       );
   } catch (e) {
     console.error(e);
