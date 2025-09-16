@@ -1,207 +1,276 @@
-// app.js — CaptioChat MVP (Render)
-// Node 18+ (usa fetch global). Sem dependências externas.
+// app.js — CaptioChat portal (MVP)
+// Node >=18. ESM (package.json "type": "module")
 
 import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
 
-// ------------ Env ------------
-const META_APP_ID = process.env.META_APP_ID || "";
-const META_APP_SECRET = process.env.META_APP_SECRET || "";
-const META_REDIRECT_URI =
-  process.env.META_REDIRECT_URI || "https://app.captiochat.com/auth/meta/callback";
-const META_VERSION = process.env.META_GRAPH_VERSION || "v19.0";
-
-// Origem do site público (para o botão Voltar nas telas internas)
-const SITE_ORIGIN = process.env.SITE_ORIGIN || "https://www.captiochat.com";
-
-// ------------ Express básico ------------
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+/* ====== ENV ====== */
+const {
+  META_APP_ID,
+  META_APP_SECRET,
+  META_REDIRECT_URI, // ex: https://app.captiochat.com/auth/meta/callback
+  META_GRAPH_VERSION = "v19.0",
+  SITE_HOST = "https://www.captiochat.com", // para "Voltar" e redirect de /comecar
+} = process.env;
 
-// Serve APENAS /assets direto (evita ambiguidade com rotas)
-app.use("/assets", express.static(path.join(__dirname, "public", "assets")));
-
-// Rotas explícitas para as páginas estáticas
-app.get("/", (_req, res) =>
-  res.sendFile(path.join(__dirname, "public", "index.html"))
-);
-
-app.get(["/comecar", "/comecar.html"], (_req, res) =>
-  res.sendFile(path.join(__dirname, "public", "comecar.html"))
-);
-
-// Healthcheck
-app.get("/health", (_req, res) => res.status(200).send("ok"));
-
-// Debug: ver qual redirect_uri está em uso
-app.get("/debug/redirect", (_req, res) => res.type("text").send(META_REDIRECT_URI));
-
-// ------------- DEMO: Página de conexão do Messenger (HTML simples) -------------
-app.get("/connect/meta", (req, res) => {
-  const denied = req.query.denied ? `<div class="alert">Conexão cancelada. Nenhuma permissão foi concedida.</div>` : "";
-  const tenant = (req.query.tenant_id || "demo_show").toString();
-
-  const html = `<!doctype html>
-<html lang="pt-br">
+/* ====== UTILS ====== */
+const html = (title, body) => `
+<!doctype html><html lang="pt-br">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Conectar — Facebook Messenger</title>
-<link rel="icon" href="/assets/favicon.ico"/>
-<style>
-:root{--bg:#0b1020;--card:#0f172a;--fg:#e5e7eb;--muted:#94a3b8;--accent:#2563eb;--ok:#22c55e}
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font-family:Inter,system-ui,Arial,sans-serif}
-.nav{display:flex;align-items:center;justify-content:space-between;max-width:1000px;margin:16px auto;padding:0 16px}
-.brand{display:flex;gap:10px;align-items:center;font-weight:800}
-.brand img{width:28px;height:28px;border-radius:8px}
-.btn-back{background:transparent;border:1px solid rgba(255,255,255,.15);color:var(--fg);padding:10px 14px;border-radius:10px;text-decoration:none}
-.wrap{max-width:1000px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:24px}
-.card{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:24px}
-h1{margin:0 0 8px;font-size:34px}
-p{color:var(--muted)}
-.btn{display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:14px 18px;font-weight:700;text-decoration:none}
-.alert{background:#2b0f10;color:#ffb4b9;border:1px solid #43191b;padding:12px 14px;border-radius:10px;margin-bottom:16px}
-ul{margin:8px 0 0 20px;color:var(--muted)}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    :root{--bg:#0b1220;--card:#111b2e;--muted:#97a5bf;--fg:#e6eefc;--primary:#2563eb;--ok:#9ae6b4;--warn:#f6e05e;--err:#fecaca}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:var(--bg);color:var(--fg)}
+    .nav{display:flex;align-items:center;justify-content:space-between;max-width:1100px;margin:18px auto;padding:0 16px}
+    .brand{display:flex;gap:10px;align-items:center;font-weight:800}
+    .brand img{width:28px;height:28px;border-radius:8px}
+    .btn{display:inline-flex;align-items:center;gap:8px;background:var(--primary);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-weight:700;text-decoration:none}
+    .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,.15);padding:10px 16px;border-radius:12px;color:var(--fg);text-decoration:none}
+    .wrap{max-width:980px;margin:40px auto;padding:0 16px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:20px}
+    h1{margin:0 0 14px;font-size:36px} p{margin:0 0 14px;color:var(--muted)}
+    .badge-ok{display:inline-block;background:#1f2a3f;color:#c9f7d9;border:1px solid #2f4a2f;padding:4px 10px;border-radius:999px;font-size:12px}
+    .badge-warn{display:inline-block;background:#3a320f;color:#fff6bf;border:1px solid #7e6e26;padding:4px 10px;border-radius:999px;font-size:12px}
+    .alert-err{background:#2a1313;border:1px solid #5a1e1e;color:var(--err);border-radius:10px;padding:12px 14px;margin:16px 0}
+    code, pre{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-size:12px}
+    pre{white-space:pre-wrap;word-break:break-word;background:#0e1626;border:1px solid rgba(255,255,255,.06);padding:12px;border-radius:10px}
+    .top-actions{display:flex;gap:8px;justify-content:flex-end}
+  </style>
 </head>
 <body>
   <div class="nav">
     <div class="brand">
-      <img src="/assets/logo.png" alt="CaptioChat"/>
+      <img src="${SITE_HOST}/assets/logo.png" alt="CaptioChat"/>
       <span>CaptioChat</span>
     </div>
-    <a class="btn-back" href="${SITE_ORIGIN}">Voltar</a>
-  </div>
-
-  <div class="wrap">
-    <div class="card">
-      <h1>Conectar o Facebook<br/>Messenger</h1>
-      ${denied}
-      <p>Vamos pedir autorização mínima para listar suas Páginas.</p>
-      <a class="btn" href="/auth/meta/start?tenant_id=${encodeURIComponent(tenant)}">
-        Continuar com Facebook
-      </a>
-      <p style="margin-top:12px;color:#94a3b8">Ao continuar, você concorda com nossos
-      <a href="/legal/tos" style="color:#cbd5e1">Termos</a> e
-      <a href="/legal/privacy" style="color:#cbd5e1">Privacidade</a>.</p>
+    <div class="top-actions">
+      <a href="${SITE_HOST}" class="btn-ghost">Início</a>
+      <a href="${SITE_HOST}/comecar.html" class="btn-ghost">Voltar</a>
     </div>
+  </div>
+  <div class="wrap">
+    ${body}
+  </div>
+</body>
+</html>
+`;
 
+/* ====== ROTAS BÁSICAS ====== */
+
+// Healthcheck
+app.get("/health", (_req, res) => res.status(200).send("ok"));
+
+// Home simples (app)
+app.get("/", (_req, res) => {
+  res.send(
+    html(
+      "CaptioChat – App",
+      `
+      <div class="card">
+        <h1>CaptioChat – API</h1>
+        <p>Backend online.</p>
+        <p><a class="btn" href="${SITE_HOST}/comecar.html">COMEÇAR</a></p>
+      </div>
+    `
+    )
+  );
+});
+
+// /comecar no app → sempre redireciona para o site (evita 404)
+app.get("/comecar", (_req, res) => {
+  res.redirect(302, `${SITE_HOST}/comecar.html`);
+});
+
+/* ====== TELA DE CONEXÃO (APP) ====== */
+app.get("/connect/meta", (req, res) => {
+  const tenant = (req.query.tenant_id || "demo_show").toString();
+  const denied = req.query.denied ? true : false;
+
+  const body = `
+  <div class="grid">
+    <div class="card">
+      <h1>Conectar o Facebook Messenger</h1>
+      ${
+        denied
+          ? `<div class="alert-err">Conexão cancelada. Nenhuma permissão foi concedida.</div>`
+          : ""
+      }
+      <p>Vamos pedir autorização mínima para listar suas Páginas.</p>
+      <p><a class="btn" href="/auth/meta/start?tenant_id=${encodeURIComponent(
+        tenant
+      )}">Continuar com Facebook</a></p>
+      <p style="color:#7f8a9f">
+        Ao continuar, você concorda com nossos
+        <a href="${SITE_HOST}/legal/tos" style="color:#fff">Termos</a> e
+        <a href="${SITE_HOST}/legal/privacy" style="color:#fff">Privacidade</a>.
+      </p>
+    </div>
     <div class="card">
       <h2>O que vamos solicitar:</h2>
       <ul>
-        <li>Permissão para listar suas Páginas (<code>pages_show_list</code>).</li>
-        <li>Geramos um token (demo: memória) e mostramos o Page ID.</li>
+        <li>Permissão para <b>listar suas Páginas</b> (<code>pages_show_list</code>).</li>
+        <li>Geramos um token (no demo: só mostramos resultado em tela).</li>
       </ul>
+      <span class="badge-ok">Disponível</span>
     </div>
   </div>
-</body>
-</html>`;
-  res.type("html").send(html);
+  `;
+  res.send(html("Conectar o Facebook Messenger", body));
 });
 
-// ------------- OAuth START (com dry-run e teste m.facebook.com) -------------
+/* ====== OAUTH START ====== */
 app.get("/auth/meta/start", (req, res) => {
   try {
-    const tenantId = (req.query.tenant_id || "demo_show").toString();
-    const dry = req.query.dry === "1";        // ?dry=1 → mostra a URL
-    const useMobile = req.query.use_m === "1";// ?use_m=1 → m.facebook.com
+    const tenant = (req.query.tenant_id || "demo_show").toString();
+    const dry = req.query.dry === "1";
 
-    const scopes = "pages_show_list";
-    const fbDomain = useMobile ? "https://m.facebook.com" : "https://www.facebook.com";
+    if (!META_APP_ID || !META_REDIRECT_URI) {
+      return res
+        .status(500)
+        .send("Faltam META_APP_ID/META_REDIRECT_URI nas variáveis de ambiente.");
+    }
 
-    const authUrl =
-      `${fbDomain}/${META_VERSION}/dialog/oauth` +
-      `?client_id=${encodeURIComponent(META_APP_ID)}` +
-      `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
-      `&response_type=code` +
-      `&state=${encodeURIComponent(tenantId)}` +
-      `&scope=${encodeURIComponent(scopes)}`;
+    const params = new URLSearchParams({
+      client_id: META_APP_ID,
+      redirect_uri: META_REDIRECT_URI,
+      response_type: "code",
+      scope: "pages_show_list", // mínimo para demo
+      state: tenant,
+    });
 
-    if (dry) return res.type("text/plain").send(authUrl);
+    const oauthUrl = `https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth?${params.toString()}`;
 
-    return res.redirect(authUrl);
+    if (dry) {
+      return res.send(
+        html(
+          "OAuth (dry run)",
+          `<div class="card"><h1>URL de login</h1><p>Abra para testar o login do Facebook:</p><p><a class="btn" href="${oauthUrl}" target="_blank" rel="noopener">Abrir diálogo do Facebook</a></p><pre>${oauthUrl}</pre></div>`
+        )
+      );
+    }
+
+    return res.redirect(302, oauthUrl);
   } catch (e) {
-    console.error("Erro em /auth/meta/start:", e);
-    res.status(500).send("Erro ao iniciar login com Facebook.");
+    console.error(e);
+    res.status(500).send("Erro ao iniciar OAuth.");
   }
 });
 
-// ------------- OAuth CALLBACK -------------
+/* ====== OAUTH CALLBACK ====== */
 app.get("/auth/meta/callback", async (req, res) => {
   try {
-    // Cancelado no Facebook
-    if (req.query.error) {
-      const state = (req.query.state || "").toString();
-      return res.redirect(`/connect/meta?denied=1${state ? `&tenant_id=${encodeURIComponent(state)}` : ""}`);
+    const { code, state, error, error_reason, error_description } = req.query;
+
+    if (error) {
+      // Usuário cancelou ou erro do FB → volta para a tela de conexão com aviso
+      return res.redirect(
+        302,
+        `/connect/meta?tenant_id=${encodeURIComponent(
+          state || "demo_show"
+        )}&denied=1`
+      );
     }
 
-    const code = (req.query.code || "").toString();
-    const tenantId = (req.query.state || "demo_show").toString();
-    if (!code) return res.status(400).send("Faltou 'code'.");
-
-    // Troca code -> short-lived token
-    const tokenResp = await fetch(
-      `https://graph.facebook.com/${META_VERSION}/oauth/access_token` +
-        `?client_id=${encodeURIComponent(META_APP_ID)}` +
-        `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
-        `&client_secret=${encodeURIComponent(META_APP_SECRET)}` +
-        `&code=${encodeURIComponent(code)}`
-    );
-    const tokenJson = await tokenResp.json();
-    if (!tokenResp.ok || !tokenJson.access_token) {
-      return res.status(400).type("json").send(tokenJson);
+    if (!code) {
+      return res
+        .status(400)
+        .send(
+          html(
+            "Callback",
+            `<div class="card"><h1>Faltou "code"</h1><p>Abra <a class="btn-ghost" href="/connect/meta?tenant_id=${encodeURIComponent(
+              state || "demo_show"
+            )}">/connect/meta</a> e clique em “Continuar com Facebook”.</p></div>`
+          )
+        );
     }
-    const userAccessToken = tokenJson.access_token;
 
-    // Lista páginas (demo)
-    const pagesResp = await fetch(
-      `https://graph.facebook.com/${META_VERSION}/me/accounts?access_token=${encodeURIComponent(userAccessToken)}`
+    // Trocar code por access_token
+    const tokenUrl = `https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token`;
+    const tokenParams = new URLSearchParams({
+      client_id: META_APP_ID,
+      client_secret: META_APP_SECRET,
+      redirect_uri: META_REDIRECT_URI,
+      code: code.toString(),
+    });
+
+    const tRes = await fetch(`${tokenUrl}?${tokenParams.toString()}`);
+    const tJson = await tRes.json();
+
+    if (!tRes.ok || !tJson.access_token) {
+      return res
+        .status(400)
+        .send(
+          html(
+            "Erro ao trocar token",
+            `<div class="card"><h1>Erro ao obter token</h1><pre>${JSON.stringify(
+              tJson,
+              null,
+              2
+            )}</pre></div>`
+          )
+        );
+    }
+
+    const userToken = tJson.access_token;
+
+    // Lista de páginas para provar que funciona
+    const pagesRes = await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?access_token=${encodeURIComponent(
+        userToken
+      )}`
     );
-    const pages = await pagesResp.json();
+    const pagesJson = await pagesRes.json();
 
-    // Long-lived user token (opcional)
-    const llResp = await fetch(
-      `https://graph.facebook.com/${META_VERSION}/oauth/access_token` +
-        `?grant_type=fb_exchange_token` +
-        `&client_id=${encodeURIComponent(META_APP_ID)}` +
-        `&client_secret=${encodeURIComponent(META_APP_SECRET)}` +
-        `&fb_exchange_token=${encodeURIComponent(userAccessToken)}`
-    );
-    const llJson = await llResp.json();
+    let pageId = "—";
+    if (pagesRes.ok && Array.isArray(pagesJson.data) && pagesJson.data.length) {
+      pageId = pagesJson.data[0].id;
+    }
 
-    const html = `<!doctype html>
-<meta charset="utf-8"/>
-<title>Conta conectada</title>
-<style>
-body{font-family:Inter,system-ui,Arial,sans-serif;background:#0b1020;color:#e5e7eb;margin:0;padding:24px}
-.card{max-width:920px;margin:20px auto;background:#0f172a;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:24px}
-h1{margin:0 0 12px}
-pre{background:#0b1020;padding:12px;border-radius:10px;white-space:pre-wrap;word-break:break-word}
-a.btn{display:inline-block;margin-top:14px;padding:10px 14px;background:#2563eb;color:#fff;text-decoration:none;border-radius:10px}
-.small{color:#94a3b8}
-</style>
-<div class="card">
-  <h1>Conta conectada com sucesso ✅</h1>
-  <div class="small">Tenant: <b>${tenantId}</b></div>
-  <h3 style="margin-top:18px">Long-lived user token (parcial):</h3>
-  <pre>${(llJson.access_token || "").slice(0, 24)}…</pre>
-  <h3>Páginas (resumo):</h3>
-  <pre>${JSON.stringify(pages.data || [], null, 2)}</pre>
-  <a class="btn" href="/comecar">Voltar ao início</a>
-</div>`;
-    res.type("html").send(html);
+    const body = `
+      <div class="card">
+        <h1>Conta conectada com sucesso ✅</h1>
+        <p>Tenant: <b>${state || "demo_show"}</b></p>
+        <p>Page ID (primeira encontrada): <b>${pageId}</b></p>
+        <p>Versão da API: <code>${META_GRAPH_VERSION}</code></p>
+        <p><a class="btn" href="${SITE_HOST}/comecar.html">Voltar</a></p>
+      </div>
+      <div class="card">
+        <h2>Short-lived user token</h2>
+        <pre>${JSON.stringify(
+          { access_token: userToken, token_type: tJson.token_type, expires_in: tJson.expires_in },
+          null,
+          2
+        )}</pre>
+      </div>
+      <div class="card">
+        <h2>Resposta /me/accounts</h2>
+        <pre>${JSON.stringify(pagesJson, null, 2)}</pre>
+      </div>
+    `;
+    return res.send(html("Conectado", body));
   } catch (e) {
-    console.error("Erro em /auth/meta/callback:", e);
-    res.status(500).send("Erro ao finalizar login com Facebook.");
+    console.error(e);
+    return res.status(500).send("Erro no callback.");
   }
 });
 
-// ------------ Start ------------
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`CaptioChat portal on :${PORT} — v=${META_VERSION}`);
+/* ====== DEBUG ====== */
+app.get("/debug/redirect", (_req, res) => {
+  res.send(
+    html(
+      "Debug",
+      `<div class="card"><h1>Redirect URI</h1><pre>${META_REDIRECT_URI || "(vazio)"}</pre></div>`
+    )
+  );
 });
+
+/* ====== START ====== */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server on ${PORT}`));
